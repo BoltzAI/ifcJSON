@@ -152,7 +152,8 @@ class JSON2IFC(IFCJSON):
         except ValueError:
             # If that fails, assume it's already compressed format
             self.project_globalid = project['globalId']
-        self.project_name = project['name']
+        # Handle optional project name (some IFC files may not have this field)
+        self.project_name = project.get('name', 'Unnamed Project')
         self.model = ifcopenshell.file(None, self.schemaIdentifier)
         self.data['id'] = self.data.apply(self.createEntity, axis=1)
         self.data.apply(self.fillEntityFromDf, axis=1)
