@@ -68,7 +68,12 @@ class JSON2IFC(IFCJSON):
 
     def uuidToGlobalId(self, uuidString):
         if not self.isNaN(uuidString):
-            return ifcopenshell.guid.compress(uuid.UUID(uuidString).hex)
+            try:
+                # Try treating as full UUID first (original behavior)
+                return ifcopenshell.guid.compress(uuid.UUID(uuidString).hex)
+            except ValueError:
+                # If that fails, assume it's already compressed format
+                return uuidString
         else:
             return uuid
 
@@ -139,8 +144,14 @@ class JSON2IFC(IFCJSON):
     def collect_objects(self, data):
         self.data = self.readData(data)
         project = self.data[self.data.type == 'IfcProject'].iloc[0].data
-        self.project_globalid = ifcopenshell.guid.compress(
-            uuid.UUID(project['globalId']).hex)
+        # Handle both full UUID and compressed GlobalId formats for compatibility
+        try:
+            # Try treating as full UUID first (original behavior)
+            self.project_globalid = ifcopenshell.guid.compress(
+                uuid.UUID(project['globalId']).hex)
+        except ValueError:
+            # If that fails, assume it's already compressed format
+            self.project_globalid = project['globalId']
         self.project_name = project['name']
         self.model = ifcopenshell.file(None, self.schemaIdentifier)
         self.data['id'] = self.data.apply(self.createEntity, axis=1)
