@@ -67,6 +67,9 @@ class IFC2JSON4(common.IFC2JSON):
 
         # Dictionary referencing all objects with a GlobalId that are already created
         self.rootObjects = {}
+        
+        # Track all used GUIDs to ensure uniqueness
+        self.usedGuids = set()
 
         # input(dir(self.ifcModel.wrapped_data.header))
         # input(self.ifcModel.wrapped_data.header)
@@ -84,6 +87,47 @@ class IFC2JSON4(common.IFC2JSON):
         elif GEOMETRY == False:
             self.remove_geometry()
 
+    def generateUniqueGuid(self):
+        """Generate a truly unique GUID that hasn't been used before"""
+        while True:
+            new_guid = str(uuid.uuid4())
+            if new_guid not in self.usedGuids:
+                self.usedGuids.add(new_guid)
+                return new_guid
+
+    def extractAndPreserveGuid(self, entity):
+        """Extract GUID from IFC entity and ensure it's unique"""
+        if hasattr(entity, 'GlobalId') and entity.GlobalId:
+            # Extract the original GUID from IFC format
+            try:
+                # Convert IFC GUID to full UUID format
+                expanded_guid = guid.expand(entity.GlobalId)
+                # Extract the middle part (removing curly braces)
+                original_guid = guid.split(expanded_guid)[1:-1]
+                
+                # Check if this GUID is already used
+                if original_guid in self.usedGuids:
+                    print(f"WARNING: Duplicate GUID found for entity {entity.id()}: {original_guid}")
+                    print(f"Entity type: {entity.is_a()}")
+                    if hasattr(entity, 'Name'):
+                        print(f"Entity name: {entity.Name}")
+                    # Generate a new unique GUID
+                    new_guid = self.generateUniqueGuid()
+                    print(f"Generated new unique GUID: {new_guid}")
+                    return new_guid
+                else:
+                    # GUID is unique, use it
+                    self.usedGuids.add(original_guid)
+                    return original_guid
+                    
+            except Exception as e:
+                print(f"ERROR: Could not extract GUID from entity {entity.id()}: {e}")
+                # Generate a new unique GUID as fallback
+                return self.generateUniqueGuid()
+        else:
+            # Entity doesn't have a GUID, generate one
+            return self.generateUniqueGuid()
+
     def spf2Json(self):
         """
         Create json dictionary structure for all attributes of the objects in the root list
@@ -98,28 +142,52 @@ class IFC2JSON4(common.IFC2JSON):
         jsonObjects = []
         relationships = []
 
-        # Collect all entity types that already have a GlobalId
+        print("Starting GUID extraction and preservation...")
+        print(f"Processing {len(list(self.ifcModel.by_type('IfcRoot')))} IfcRoot entities...")
+
+        # Collect all entity types that already have a GlobalId (IfcRoot descendants)
         for entity in self.ifcModel.by_type('IfcRoot'):
+            preserved_guid = self.extractAndPreserveGuid(entity)
+            self.rootObjects[entity.id()] = preserved_guid
+            
             if entity.is_a('IfcRelationship'):
                 relationships.append(entity)
-            else:
-                self.rootObjects[entity.id()] = guid.split(
-                    guid.expand(entity.GlobalId))[1:-1]
 
-        # seperately collect all entity types where a GlobalId needs to be added
-        # for entity in self.ifcModel.by_type('IfcMaterialDefinition'):
-        #     self.rootObjects[entity.id()] = str(uuid.uuid4())
-        for entity in self.ifcModel.by_type('IfcShapeRepresentation'):
-            self.rootObjects[entity.id()] = str(uuid.uuid4())
-        for entity in self.ifcModel.by_type('IfcOwnerHistory'):
-            self.rootObjects[entity.id()] = str(uuid.uuid4())
-        for entity in self.ifcModel.by_type('IfcGeometricRepresentationContext'):
-            self.rootObjects[entity.id()] = str(uuid.uuid4())
+        print(f"Processed IfcRoot entities. Total unique GUIDs: {len(self.usedGuids)}")
 
-        # Seperately add all IfcRelationship entities so they appear at the end of the list
-        for entity in relationships:
-            self.rootObjects[entity.id()] = guid.split(
-                guid.expand(entity.GlobalId))[1:-1]
+        # Generate GUIDs for entity types that need them but don't inherit from IfcRoot
+        entity_types_needing_guids = [
+            'IfcShapeRepresentation',
+            'IfcOwnerHistory', 
+            'IfcGeometricRepresentationContext'
+        ]
+        
+        for entity_type in entity_types_needing_guids:
+            entities = self.ifcModel.by_type(entity_type)
+            print(f"Processing {len(entities)} {entity_type} entities...")
+            
+            for entity in entities:
+                # Only add GUID if not already processed (some might inherit from IfcRoot)
+                if entity.id() not in self.rootObjects:
+                    new_guid = self.generateUniqueGuid()
+                    self.rootObjects[entity.id()] = new_guid
+
+        print(f"Final total entities with GUIDs: {len(self.rootObjects)}")
+        print(f"Final total unique GUIDs: {len(self.usedGuids)}")
+
+        # Verify no duplicate GUIDs exist
+        guid_values = list(self.rootObjects.values())
+        if len(guid_values) != len(set(guid_values)):
+            print("ERROR: Duplicate GUIDs detected in rootObjects!")
+            duplicates = []
+            seen = set()
+            for guid_val in guid_values:
+                if guid_val in seen:
+                    duplicates.append(guid_val)
+                seen.add(guid_val)
+            print(f"Duplicate GUIDs: {duplicates}")
+        else:
+            print("✅ GUID uniqueness verified - no duplicates found")
 
         for key in self.rootObjects:
             entity = self.ifcModel.by_id(key)
@@ -143,7 +211,7 @@ class IFC2JSON4(common.IFC2JSON):
             'version': self.SCHEMA_VERSION,
             # 'schemaIdentifiers': self.ifcModel.wrapped_data.header.file_schema.schema_identifiers,
             'schemaIdentifier': self.ifcModel.wrapped_data.schema,
-            'originatingSystem': 'IFC2JSON_python Version ' + self.VERSION,
+            'originatingSystem': 'IFC2JSON_python_fixed Version ' + self.VERSION,
             'preprocessorVersion': 'IfcOpenShell ' + ifcopenshell.version,
             'timeStamp': datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             'data': jsonObjects
